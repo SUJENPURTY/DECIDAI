@@ -1,0 +1,37 @@
+/* Compact decision-table sizing: retain every column while fitting desktop cards. */
+@media (min-width: 701px) {
+  .table-wrap { overflow-x: hidden; }
+  .table-wrap table { min-width: 0; table-layout: fixed; }
+  .table-wrap th, .table-wrap td { padding: 12px 10px; font-size: 12px; }
+  .table-wrap th { padding-top: 10px; padding-bottom: 10px; font-size: 9px; }
+  .table-wrap th:nth-child(1), .table-wrap td:nth-child(1) { width: 9%; white-space: nowrap; }
+  .table-wrap th:nth-child(2), .table-wrap td:nth-child(2) { width: 22%; }
+  .table-wrap th:nth-child(3), .table-wrap td:nth-child(3) { width: 11%; }
+  .table-wrap th:nth-child(4), .table-wrap td:nth-child(4) { width: 14%; }
+  .table-wrap th:nth-child(5), .table-wrap td:nth-child(5) { width: 8%; white-space: nowrap; }
+  .table-wrap th:nth-child(6), .table-wrap td:nth-child(6) { width: 12%; }
+  .table-wrap th:nth-child(7), .table-wrap td:nth-child(7) { width: 10%; }
+  .table-wrap th:nth-child(8), .table-wrap td:nth-child(8) { width: 14%; white-space: nowrap; }
+  .table-wrap td:nth-child(2) > strong {
+    display: -webkit-box;
+    overflow: hidden;
+    line-height: 1.35;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .table-wrap .badge { padding: 3px 7px; font-size: 10px; }
+  .table-wrap .link-button { white-space: nowrap; font-size: 11px; }
+  .table-wrap .case-id { font-size: 11px; }
+}
+
+@media (max-width: 700px) {
+  .table-wrap table { min-width: 760px; }
+  .table-wrap th, .table-wrap td { padding-left: 12px; padding-right: 12px; }
+  .table-wrap td:nth-child(2) > strong {
+    display: -webkit-box;
+    overflow: hidden;
+    line-height: 1.35;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}

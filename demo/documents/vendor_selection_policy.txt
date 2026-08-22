@@ -1,0 +1,5 @@
+DEMO POLICY — FICTIONAL DATA FOR DECIDAI DEMONSTRATION
+
+Vendor selections normally require a documented comparison of available suppliers. An urgent delivery need may be considered by a human reviewer, but the urgency, price reasonableness, and business impact must be documented before a final decision.
+
+This fictional policy is for demonstration only.

@@ -1,0 +1,5 @@
+DEMO POLICY — FICTIONAL DATA FOR DECIDAI DEMONSTRATION
+
+Approved departmental analytics software renewals under ₹30,000 may proceed when the reporting team documents budget approval and confirms the subscription remains required for current business reporting.
+
+The requester should provide the renewal amount, the business need, and written budget confirmation. This fictional policy is for demonstration only.
