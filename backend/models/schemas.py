@@ -74,3 +74,14 @@ class TeamInvitationCreateRequest(BaseModel):
 
 class TeamInvitationAcceptRequest(BaseModel):
     token: str = Field(min_length=20, max_length=512)
+
+
+class TeamMemberRoleRequest(BaseModel):
+    role: TeamRole
+
+
+PaidPlan = Literal["PRO", "BUSINESS"]
+
+
+class BillingCheckoutRequest(BaseModel):
+    target_plan: PaidPlan
