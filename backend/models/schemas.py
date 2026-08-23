@@ -62,3 +62,15 @@ class HumanDecisionResponse(BaseModel):
     reviewer_name: str
     is_override: bool
     created_at: str
+
+
+TeamRole = Literal["admin", "reviewer", "requester"]
+
+
+class TeamInvitationCreateRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: TeamRole
+
+
+class TeamInvitationAcceptRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)

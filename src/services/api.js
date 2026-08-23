@@ -27,3 +27,13 @@ export const getDashboardStats = () => request('/api/dashboard/stats')
 export const getCases = () => request('/api/cases')
 export const getCase = id => request(`/api/cases/${id}`)
 export const submitDecision = (id, decision) => request(`/api/cases/${id}/decision`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(decision)})
+export const getTeamInvitations = () => request('/api/team/invitations')
+export const createTeamInvitation = invitation => request('/api/team/invitations', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(invitation)})
+export const revokeTeamInvitation = id => request(`/api/team/invitations/${id}/revoke`, {method:'POST'})
+
+export async function getTeamMembers(){
+  if(!supabase)throw new Error('Authentication is not configured.')
+  const {data,error}=await supabase.from('profiles').select('id,full_name,email,role,created_at').order('created_at')
+  if(error)throw new Error('We could not load workspace members. Please try again.')
+  return data||[]
+}

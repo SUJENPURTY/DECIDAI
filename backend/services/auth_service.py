@@ -24,7 +24,9 @@ def require_user(authorization: str | None = Header(default=None)) -> CurrentUse
         profile=(result.data or [None])[0]
         if not profile or not profile.get("organization_id") or profile.get("role") not in {"admin", "reviewer", "requester"}:
             raise HTTPException(status_code=403, detail="Your account profile or organization membership is incomplete.")
-        return CurrentUser(str(auth_user.id), str(profile["organization_id"]), profile["role"], profile.get("email") or auth_user.email or "")
+        # The verified Auth email is authoritative for invitation acceptance;
+        # profile.email is mutable application data and must not be trusted for it.
+        return CurrentUser(str(auth_user.id), str(profile["organization_id"]), profile["role"], auth_user.email or "")
     except HTTPException:
         raise
     except Exception as exc:

@@ -1,6 +1,7 @@
 """Centralized, server-side persistence for DECIDAI's human decision audit trail."""
 import os
 import re
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -29,6 +30,23 @@ class PermissionDeniedError(DatabaseError):
     pass
 
 
+class InvitationConflictError(DatabaseError):
+    pass
+
+
+class InvitationNotFoundError(DatabaseError):
+    pass
+
+
+class InvitationEmailMismatchError(PermissionDeniedError):
+    pass
+
+
+TEAM_ROLES = {"admin", "reviewer", "requester"}
+_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_INVITATION_COLUMNS = "id,organization_id,email,role,invited_by,expires_at,accepted_at,created_at,updated_at"
+
+
 def _client() -> Client:
     url = os.getenv("SUPABASE_URL")
     service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -50,6 +68,130 @@ def _amount_as_decimal(amount: str) -> str:
         return str(Decimal(normalized))
     except (InvalidOperation, ValueError) as exc:
         raise DatabaseError("The request amount must be a valid number.") from exc
+
+
+def normalize_email(email: str) -> str:
+    """Normalize the address used for invitation lookup and storage."""
+    normalized = email.strip().lower()
+    if not _EMAIL_PATTERN.fullmatch(normalized):
+        raise DatabaseError("Please provide a valid invitation email address.")
+    return normalized
+
+
+def _has_rows(response: Any) -> bool:
+    return bool(response.data)
+
+
+def create_organization_invitation(organization_id: str, invited_by: str, email: str,
+                                   role: str, token_hash: str, expires_at: datetime) -> dict[str, Any]:
+    """Create an invitation after enforcing tenant membership and pending-invite rules."""
+    if role not in TEAM_ROLES:
+        raise DatabaseError("The invitation role is invalid.")
+    if not token_hash or len(token_hash) != 64:
+        raise DatabaseError("The invitation token could not be created.")
+    normalized_email = normalize_email(email)
+    try:
+        client = _client()
+        member = client.table("profiles").select("id").eq(
+            "organization_id", organization_id
+        ).ilike("email", normalized_email).limit(1).execute()
+        if _has_rows(member):
+            raise InvitationConflictError("This user already belongs to this organization.")
+
+        pending = client.table("organization_invitations").select("id").eq(
+            "organization_id", organization_id
+        ).ilike("email", normalized_email).is_("accepted_at", "null").gt(
+            "expires_at", datetime.now(timezone.utc).isoformat()
+        ).limit(1).execute()
+        if _has_rows(pending):
+            raise InvitationConflictError("A pending invitation already exists for this email address.")
+
+        return _one(client.table("organization_invitations").insert({
+            "organization_id": organization_id,
+            "email": normalized_email,
+            "role": role,
+            "invited_by": invited_by,
+            "token_hash": token_hash,
+            "expires_at": expires_at.isoformat(),
+        }).select(_INVITATION_COLUMNS).execute())
+    except (DatabaseError, InvitationConflictError):
+        raise
+    except Exception as exc:
+        if "organization_invitations_pending_email_key" in str(exc) or "duplicate" in str(exc).lower():
+            raise InvitationConflictError("A pending invitation already exists for this email address.") from exc
+        raise DatabaseError("We could not create this team invitation. Please try again.") from exc
+
+
+def list_organization_invitations(organization_id: str) -> list[dict[str, Any]]:
+    """Return only token-safe invitation fields for one organization."""
+    try:
+        return _client().table("organization_invitations").select(_INVITATION_COLUMNS).eq(
+            "organization_id", organization_id
+        ).order("created_at", desc=True).execute().data or []
+    except DatabaseConfigurationError:
+        raise
+    except Exception as exc:
+        raise DatabaseError("We could not retrieve team invitations. Please try again.") from exc
+
+
+def revoke_organization_invitation(invitation_id: str, organization_id: str) -> None:
+    """Delete an unaccepted invitation in the admin's own organization only."""
+    try:
+        client = _client()
+        invitation = client.table("organization_invitations").select("id,accepted_at").eq(
+            "id", invitation_id
+        ).eq("organization_id", organization_id).limit(1).execute().data or []
+        if not invitation:
+            raise InvitationNotFoundError("The requested team invitation could not be found.")
+        if invitation[0].get("accepted_at"):
+            raise InvitationConflictError("Accepted invitations cannot be revoked.")
+        client.table("organization_invitations").delete().eq("id", invitation_id).eq(
+            "organization_id", organization_id
+        ).is_("accepted_at", "null").execute()
+    except (DatabaseError, InvitationConflictError, InvitationNotFoundError):
+        raise
+    except Exception as exc:
+        raise DatabaseError("We could not revoke this team invitation. Please try again.") from exc
+
+
+def accept_organization_invitation(token_hash: str, user_id: str, authenticated_email: str) -> dict[str, Any]:
+    """Join the authenticated user to the organization encoded by a valid invite."""
+    if not token_hash or len(token_hash) != 64:
+        raise InvitationNotFoundError("This invitation is invalid, expired, or has already been used.")
+    verified_email = normalize_email(authenticated_email)
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        client = _client()
+        rows = client.table("organization_invitations").select(
+            f"{_INVITATION_COLUMNS},token_hash"
+        ).eq("token_hash", token_hash).is_("accepted_at", "null").gt(
+            "expires_at", now
+        ).limit(2).execute().data or []
+        if len(rows) != 1:
+            raise InvitationNotFoundError("This invitation is invalid, expired, or has already been used.")
+        invitation = rows[0]
+        if normalize_email(invitation["email"]) != verified_email:
+            raise InvitationEmailMismatchError("This invitation is not for the authenticated email address.")
+        if invitation.get("role") not in TEAM_ROLES:
+            raise InvitationNotFoundError("This invitation is invalid, expired, or has already been used.")
+
+        profile = _one(client.table("profiles").update({
+            "organization_id": invitation["organization_id"],
+            "role": invitation["role"],
+            "email": verified_email,
+        }).eq("id", user_id).select("id,organization_id,role,email").execute())
+        accepted = client.table("organization_invitations").update({
+            "accepted_at": now,
+        }).eq("id", invitation["id"]).eq("token_hash", token_hash).is_(
+            "accepted_at", "null"
+        ).gt("expires_at", now).select(_INVITATION_COLUMNS).execute().data or []
+        if not accepted:
+            raise InvitationNotFoundError("This invitation is invalid, expired, or has already been used.")
+        return profile
+    except (DatabaseError, InvitationNotFoundError, InvitationEmailMismatchError):
+        raise
+    except Exception as exc:
+        raise DatabaseError("We could not accept this team invitation. Please try again.") from exc
 
 
 def create_case(case_id: str, case: dict[str, str], supporting_document_name: str | None,

@@ -37,6 +37,54 @@ create table if not exists public.profiles (
   updated_at timestamptz not null default now()
 );
 
+-- Invitations are created and managed only by trusted server-side code.  The
+-- email value is retained for delivery/audit; uniqueness and matching use its
+-- normalized form so case and surrounding whitespace cannot create duplicates.
+create table if not exists public.organization_invitations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations(id) on delete cascade,
+  email text not null,
+  role text not null default 'requester' check (role in ('admin', 'reviewer', 'requester')),
+  invited_by uuid not null references auth.users(id),
+  token_hash text not null,
+  expires_at timestamptz not null,
+  accepted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.organization_invitations add column if not exists organization_id uuid references public.organizations(id) on delete cascade;
+alter table public.organization_invitations add column if not exists email text;
+alter table public.organization_invitations add column if not exists role text default 'requester';
+alter table public.organization_invitations add column if not exists invited_by uuid references auth.users(id);
+alter table public.organization_invitations add column if not exists token_hash text;
+alter table public.organization_invitations add column if not exists expires_at timestamptz;
+alter table public.organization_invitations add column if not exists accepted_at timestamptz;
+alter table public.organization_invitations add column if not exists created_at timestamptz default now();
+alter table public.organization_invitations add column if not exists updated_at timestamptz default now();
+alter table public.organization_invitations alter column created_at set default now();
+alter table public.organization_invitations alter column updated_at set default now();
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.organization_invitations'::regclass
+      and conname = 'organization_invitations_role_check'
+  ) then
+    alter table public.organization_invitations add constraint organization_invitations_role_check
+      check (role in ('admin', 'reviewer', 'requester'));
+  end if;
+end;
+$$;
+
+create index if not exists organization_invitations_organization_created_idx
+  on public.organization_invitations (organization_id, created_at desc);
+create index if not exists organization_invitations_expires_at_idx
+  on public.organization_invitations (expires_at);
+create unique index if not exists organization_invitations_pending_email_key
+  on public.organization_invitations (organization_id, lower(btrim(email)))
+  where accepted_at is null;
+
 alter table public.profiles add column if not exists email text;
 alter table public.profiles add column if not exists full_name text;
 alter table public.profiles add column if not exists avatar_url text;
@@ -185,6 +233,11 @@ create trigger profiles_set_updated_at
 before update on public.profiles
 for each row execute function public.set_updated_at();
 
+drop trigger if exists organization_invitations_set_updated_at on public.organization_invitations;
+create trigger organization_invitations_set_updated_at
+before update on public.organization_invitations
+for each row execute function public.set_updated_at();
+
 -- Sign-up is idempotent: an existing profile is left intact. A new auth user
 -- receives a dedicated workspace and is its initial administrator.
 create or replace function public.handle_new_user()
@@ -197,8 +250,48 @@ declare
   organization_id uuid;
   organization_name text;
   organization_slug text;
+  matching_invitation public.organization_invitations%rowtype;
 begin
   if exists (select 1 from public.profiles profile where profile.id = new.id) then
+    return new;
+  end if;
+
+  -- A pending, unexpired invitation takes precedence over self-service
+  -- provisioning only when the caller proves possession of its token. Lock it
+  -- so it cannot be consumed concurrently. Trusted invite creation must store
+  -- token_hash as encode(digest(raw_token, 'sha256'), 'hex').
+  select invitation.*
+  into matching_invitation
+  from public.organization_invitations invitation
+  where lower(btrim(invitation.email)) = lower(btrim(coalesce(new.email, '')))
+    and invitation.accepted_at is null
+    and invitation.expires_at > now()
+    and nullif(new.raw_user_meta_data ->> 'invite_token', '') is not null
+    and invitation.token_hash = encode(
+      digest(new.raw_user_meta_data ->> 'invite_token', 'sha256'),
+      'hex'
+    )
+  order by invitation.created_at desc
+  limit 1
+  for update;
+
+  if found then
+    insert into public.profiles (id, email, full_name, avatar_url, organization_id, role)
+    values (
+      new.id,
+      new.email,
+      nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''),
+      nullif(trim(new.raw_user_meta_data ->> 'avatar_url'), ''),
+      matching_invitation.organization_id,
+      matching_invitation.role
+    );
+
+    update public.organization_invitations
+    set accepted_at = now()
+    where id = matching_invitation.id
+      and accepted_at is null
+      and expires_at > now();
+
     return new;
   end if;
 
@@ -238,6 +331,7 @@ for each row execute function public.handle_new_user();
 -- RLS is enabled for all tenant-owned data.
 alter table public.organizations enable row level security;
 alter table public.profiles enable row level security;
+alter table public.organization_invitations enable row level security;
 alter table public.decision_cases enable row level security;
 alter table public.ai_analyses enable row level security;
 alter table public.human_decisions enable row level security;
@@ -248,6 +342,7 @@ alter table public.audit_logs enable row level security;
 drop policy if exists "decidai_organizations_select_own" on public.organizations;
 drop policy if exists "decidai_organizations_update_admin" on public.organizations;
 drop policy if exists "decidai_profiles_select_own_or_admin" on public.profiles;
+drop policy if exists "decidai_organization_invitations_select_admin" on public.organization_invitations;
 drop policy if exists "decidai_cases_select_visible" on public.decision_cases;
 drop policy if exists "decidai_cases_insert_own_org" on public.decision_cases;
 drop policy if exists "decidai_ai_analyses_select_visible_case" on public.ai_analyses;
@@ -286,6 +381,13 @@ using (
   )
 );
 
+create policy "decidai_organization_invitations_select_admin"
+on public.organization_invitations for select to authenticated
+using (
+  organization_id = public.current_user_organization_id()
+  and public.current_user_role() = 'admin'
+);
+
 create policy "decidai_cases_select_visible"
 on public.decision_cases for select to authenticated
 using (
@@ -319,12 +421,12 @@ using (public.can_read_decision_case(decision_case_id));
 -- Browser clients may read only through the policies above. Direct writes to
 -- related records and audit history are intentionally unavailable; FastAPI's
 -- service role performs trusted writes after validating the JWT and tenant.
-revoke all on public.organizations, public.profiles, public.decision_cases,
+revoke all on public.organizations, public.profiles, public.organization_invitations, public.decision_cases,
   public.ai_analyses, public.human_decisions, public.audit_logs from anon;
-revoke insert, update, delete on public.organizations, public.profiles,
+revoke insert, update, delete on public.organizations, public.profiles, public.organization_invitations,
   public.decision_cases, public.ai_analyses, public.human_decisions,
   public.audit_logs from authenticated;
-grant select on public.organizations, public.profiles, public.decision_cases,
+grant select on public.organizations, public.profiles, public.organization_invitations, public.decision_cases,
   public.ai_analyses, public.human_decisions, public.audit_logs to authenticated;
 grant insert on public.decision_cases to authenticated;
 grant update (name, slug) on public.organizations to authenticated;
