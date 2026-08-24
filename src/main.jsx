@@ -29,6 +29,7 @@ import {
   Users,
   CreditCard,
   BarChart3,
+  ArrowRight,
 } from "lucide-react";
 import {
   analyzeCase,
@@ -53,6 +54,8 @@ import { supabase } from "./services/supabase";
 import "./styles.css";
 import "./table.css";
 import "./phase2.css";
+import "./responsive.css";
+import "./landing.css";
 const nav = [
     ["Dashboard", LayoutDashboard],
     ["New Case", Plus],
@@ -79,13 +82,21 @@ const Badge = ({ children, tone }) => (
     {children}
   </span>
 );
-const Loading = () => (
+const Loading = ({ children = "Loading…" }) => (
   <div className="loading-state">
     <LoaderCircle size={20} />
-    Loading decision data…
+    {children}
   </div>
 );
 const Error = ({ children }) => <div className="form-error">{children}</div>;
+const safeError = (error, fallback) => {
+  let message = String(error?.message || "").toLowerCase();
+  if (message.includes("sign in") || message.includes("authentication"))
+    return "Please sign in to continue.";
+  if (message.includes("permission") || message.includes("forbidden"))
+    return "You don't have permission to do that.";
+  return fallback;
+};
 function Sidebar({ page, setPage, open, setOpen, identity }) {
   let auth = useAuth();
   identity = identity || {
@@ -144,14 +155,16 @@ function NotificationsCenter({ openCase }) {
   let [open, setOpen] = useState(false),
     [items, setItems] = useState([]),
     [loading, setLoading] = useState(true),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [notice, setNotice] = useState(""),
+    [marking, setMarking] = useState(false);
   let load = async () => {
     setLoading(true);
     setError("");
     try {
       setItems(await getNotifications());
     } catch (e) {
-      setError(e.message);
+      setError(safeError(e, "Notifications are temporarily unavailable. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -161,25 +174,32 @@ function NotificationsCenter({ openCase }) {
   }, []);
   let unread = items.filter((item) => !item.read).length;
   let mark = async (item) => {
-    if (item.read) return;
+    if (item.read || marking) return;
+    setMarking(true);
+    setNotice("");
     try {
       await markNotificationRead(item.id);
       setItems((rows) =>
         rows.map((row) => (row.id === item.id ? { ...row, read: true } : row)),
       );
+      setNotice("Notification marked as read.");
     } catch (e) {
-      setError(e.message);
-    }
+      setError(safeError(e, "We couldn't update that notification. Please try again."));
+    } finally { setMarking(false); }
   };
   let markAll = async () => {
+    if (marking || !unread) return;
+    setMarking(true);
+    setNotice("");
     try {
       await Promise.all(
         items.filter((item) => !item.read).map((item) => markNotificationRead(item.id)),
       );
       setItems((rows) => rows.map((row) => ({ ...row, read: true })));
+      setNotice("All notifications marked as read.");
     } catch (e) {
-      setError(e.message);
-    }
+      setError(safeError(e, "We couldn't update your notifications. Please try again."));
+    } finally { setMarking(false); }
   };
   let openItem = async (item) => {
     await mark(item);
@@ -206,7 +226,7 @@ function NotificationsCenter({ openCase }) {
               <b>Notifications</b>
               <span>{unread ? `${unread} unread` : "All caught up"}</span>
             </div>
-            <button className="text-button" disabled={!unread} onClick={markAll}>
+            <button className="text-button" disabled={!unread || marking} onClick={markAll}>
               Mark all read
             </button>
           </div>
@@ -241,9 +261,10 @@ function NotificationsCenter({ openCase }) {
           ) : (
             <div className="notification-state empty">
               <Bell size={19} />
-              No notifications yet.
+              You're all caught up.
             </div>
           )}
+          {notice && <div className="notification-notice" role="status">{notice}</div>}
         </section>
       )}
     </div>
@@ -362,7 +383,9 @@ function Stat({ label, value, Icon, tone }) {
 function Table({ rows, history, onOpen }) {
   if (!rows.length)
     return (
-      <p className="empty-copy table-empty">No decision history available.</p>
+      <p className="empty-copy table-empty">
+        {history ? "No finalized decisions yet." : "No decision cases yet."}
+      </p>
     );
   let cols = history
     ? [
@@ -481,7 +504,11 @@ function Dashboard({ setPage, openCase }) {
     [rows, setRows] = useState(),
     [analytics, setAnalytics] = useState(),
     [error, setError] = useState("");
-  useEffect(() => {
+  let load = () => {
+    setError("");
+    setStats(undefined);
+    setRows(undefined);
+    setAnalytics(undefined);
     let requests = [getDashboardStats(), getCases()];
     if (isAdmin) requests.push(getAnalytics());
     Promise.all(requests)
@@ -495,9 +522,12 @@ function Dashboard({ setPage, openCase }) {
           "Decision records are temporarily unavailable. Please try again.",
         ),
       );
+  };
+  useEffect(() => {
+    load();
   }, []);
-  if (error) return <Error>{error}</Error>;
-  if (!stats || !rows || (isAdmin && !analytics)) return <Loading />;
+  if (error) return <div className="page-state"><Error>{error}</Error><button className="secondary" onClick={load}>Retry</button></div>;
+  if (!stats || !rows || (isAdmin && !analytics)) return <Loading>Loading dashboard…</Loading>;
   return (
     <>
       <section className="page-heading">
@@ -567,7 +597,7 @@ function Dashboard({ setPage, openCase }) {
           <Table rows={rows} onOpen={openCase} />
         ) : (
           <div className="empty-state">
-            No decision cases yet.
+            <span>No cases have been created in this workspace yet.</span>
             {canCreate && (
               <button className="primary" onClick={() => setPage("New Case")}>
                 Create First Case
@@ -600,10 +630,10 @@ function NewCase({ setPage, setData }) {
     if (!file) fd.delete("supporting_document");
     setLoading(true);
     try {
-      setData(await analyzeCase(fd));
+      setData({ ...(await analyzeCase(fd)), _justCreated: true });
       setPage("Case Analysis");
     } catch (x) {
-      setError(x.message);
+      setError(safeError(x, "We couldn't create and analyze this case. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -749,6 +779,11 @@ function Human({ data, onRecorded }) {
   if (existing)
     return (
       <section className="human-panel">
+        {data._decisionRecorded && (
+          <div className="selected-note" role="status">
+            <CheckCircle2 size={16} /> Final decision submitted and added to the audit trail.
+          </div>
+        )}
         <span className="eyebrow">FINAL DECISION RECORDED</span>
         <h2>Human Decision: {pretty(existing.final_decision)}</h2>
         <p>
@@ -784,6 +819,7 @@ function Human({ data, onRecorded }) {
         ? "APPROVED"
         : null;
   async function save() {
+    setError("");
     setLoading(true);
     try {
       await submitDecision(data.decision_case_id, {
@@ -792,7 +828,7 @@ function Human({ data, onRecorded }) {
         reviewer_name: reviewer,
       });
       setConfirm(false);
-      onRecorded();
+      onRecorded(true);
     } catch (e) {
       setError(
         "Decision records are temporarily unavailable. Please try again.",
@@ -916,14 +952,16 @@ function Audit({ events = [] }) {
               </div>
             ))
         ) : (
-          <p>No audit events available.</p>
+          <p>No activity has been recorded for this case yet.</p>
         )}
       </div>
     </Detail>
   );
 }
 function Analysis({ data, refresh }) {
-  if (!data) return <Loading />;
+  if (!data) return <Loading>Loading case analysis…</Loading>;
+  if (data._loadError)
+    return <div className="page-state"><Error>We couldn't load this case. Please try again.</Error><button className="secondary" onClick={refresh}>Retry</button></div>;
   let d = data.case || data,
     a = data.analysis || latest(data.ai_analyses) || {};
   let current = {
@@ -965,6 +1003,12 @@ function Analysis({ data, refresh }) {
           </div>
         ))}
       </section>
+      {data._justCreated && (
+        <section className="notice analysis-notice" role="status">
+          <CheckCircle2 size={18} />
+          <span><b>Case created and analyzed.</b> Review the AI recommendation below before recording a human decision.</span>
+        </section>
+      )}
       <div className="analysis-layout">
         <div className="analysis-main">
           <section className="ai-card">
@@ -1068,7 +1112,9 @@ function Analysis({ data, refresh }) {
 function HistoryPage({ openCase }) {
   let [rows, setRows] = useState(),
     [error, setError] = useState("");
-  useEffect(() => {
+  let load = () => {
+    setError("");
+    setRows(undefined);
     getCases()
       .then(setRows)
       .catch(() =>
@@ -1076,6 +1122,9 @@ function HistoryPage({ openCase }) {
           "Decision records are temporarily unavailable. Please try again.",
         ),
       );
+  };
+  useEffect(() => {
+    load();
   }, []);
   return (
     <>
@@ -1094,9 +1143,9 @@ function HistoryPage({ openCase }) {
         </span>
       </section>
       {error ? (
-        <Error>{error}</Error>
+        <div className="page-state"><Error>{error}</Error><button className="secondary" onClick={load}>Retry</button></div>
       ) : !rows ? (
-        <Loading />
+        <Loading>Loading decision history…</Loading>
       ) : (
         <section className="panel">
           <Table rows={rows} history onOpen={openCase} />
@@ -1213,7 +1262,7 @@ function TeamMembers({ identity }) {
       setMembers(loadedMembers);
       setInvitations(loadedInvitations);
     } catch (e) {
-      setError(e.message);
+      setError(safeError(e, "We couldn't load workspace members. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -1231,7 +1280,7 @@ function TeamMembers({ identity }) {
       setSuccessUrl(result.invite_url);
       setInvite({ email: "", role: "reviewer" });
     } catch (e) {
-      setError(e.message);
+      setError(safeError(e, "We couldn't create that invitation. Please try again."));
     } finally {
       setSubmitting(false);
     }
@@ -1244,9 +1293,9 @@ function TeamMembers({ identity }) {
       setInvitations((items) =>
         items.filter((invitation) => invitation.id !== id),
       );
-      setNotice("Invitation revoked.");
+      setNotice("Invitation revoked. The recipient can no longer use the invite link.");
     } catch (e) {
-      setError(e.message);
+      setError(safeError(e, "We couldn't revoke that invitation. Please try again."));
     } finally {
       setRevokeId("");
     }
@@ -1255,7 +1304,7 @@ function TeamMembers({ identity }) {
     try {
       await navigator.clipboard.writeText(successUrl);
     } catch {
-      setError("Copy the invite URL manually from the field below.");
+      setError("The invite link is ready. Copy it manually from the field below.");
     }
   };
   let lastAdmin = (member) =>
@@ -1275,9 +1324,9 @@ function TeamMembers({ identity }) {
             : item,
         ),
       );
-      setNotice("Member role updated.");
+      setNotice("Member role updated successfully.");
     } catch (e) {
-      setError(e.message);
+      setError(safeError(e, "We couldn't update that member's role. Please try again."));
     } finally {
       setMemberAction("");
     }
@@ -1295,7 +1344,7 @@ function TeamMembers({ identity }) {
       setNotice("Member removed from this workspace.");
       setRemoveCandidate(null);
     } catch (e) {
-      setError(e.message);
+      setError(safeError(e, "We couldn't remove that member. Please try again."));
     } finally {
       setMemberAction("");
     }
@@ -1324,7 +1373,7 @@ function TeamMembers({ identity }) {
           </button>
         )}
       </div>
-      {error && <Error>{error}</Error>}
+      {error && <div className="page-state"><Error>{error}</Error><button className="secondary" onClick={load}>Retry</button></div>}
       {notice && (
         <div className="member-success" role="status">
           <CheckCircle2 size={16} />
@@ -1332,7 +1381,7 @@ function TeamMembers({ identity }) {
         </div>
       )}
       {loading ? (
-        <Loading />
+        <Loading>Loading team members…</Loading>
       ) : (
         <>
           <div className="team-table-wrap">
@@ -1417,9 +1466,7 @@ function TeamMembers({ identity }) {
                 </tbody>
               </table>
             ) : (
-              <p className="empty-copy">
-                No workspace members are available to your account.
-              </p>
+              <p className="empty-copy">No workspace members are available to your account yet.</p>
             )}
           </div>
           {admin && (
@@ -1471,9 +1518,11 @@ function TeamMembers({ identity }) {
                   </tbody>
                 </table>
               ) : (
-                <p className="empty-copy">
-                  No invitations have been created yet.
-                </p>
+                <div className="empty-state compact-empty">
+                  <span>No invitations have been sent yet.</span>
+                  <span>Invite a teammate when you are ready to add them to this workspace.</span>
+                  <button className="primary" onClick={() => { setSuccessUrl(""); setInviteOpen(true); }}>Invite Member</button>
+                </div>
               )}
             </div>
           )}
@@ -1628,13 +1677,18 @@ function TeamAuditLog() {
   let [events, setEvents] = useState(),
     [members, setMembers] = useState([]),
     [error, setError] = useState("");
-  useEffect(() => {
+  let load = () => {
+    setError("");
+    setEvents(undefined);
     Promise.all([getTeamAuditLog(), getTeamMembers()])
       .then(([auditRows, team]) => {
         setEvents(auditRows);
         setMembers(team);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(safeError(e, "We couldn't load the team audit log. Please try again.")));
+  };
+  useEffect(() => {
+    load();
   }, []);
   let names = Object.fromEntries(
     members.map((member) => [
@@ -1644,8 +1698,8 @@ function TeamAuditLog() {
   );
   let person = (id, fallback) =>
     names[id] || fallback + " · " + String(id || "unknown").slice(0, 8);
-  if (error) return <Error>{error}</Error>;
-  if (!events) return <Loading />;
+  if (error) return <div className="page-state"><Error>{error}</Error><button className="secondary" onClick={load}>Retry</button></div>;
+  if (!events) return <Loading>Loading team activity…</Loading>;
   return (
     <div className="team-table-wrap team-audit-log">
       <div className="team-note">
@@ -1699,7 +1753,8 @@ function TeamAuditLog() {
       ) : (
         <div className="empty-state">
           <History size={22} />
-          <span>No team member changes have been recorded yet.</span>
+          <span>No team activity yet.</span>
+          <span>Role changes and member removals will appear here.</span>
         </div>
       )}
     </div>
@@ -1712,15 +1767,16 @@ const planCards = [
 ];
 const usageLabels = { cases_created: "Cases", ai_analyses: "AI analyses", team_members: "Team members", invitations_sent: "Invitations" };
 function BillingUsage() {
-  let [billing, setBilling] = useState(), [error, setError] = useState("");
+  let [billing, setBilling] = useState(), [error, setError] = useState(""), [loading, setLoading] = useState(true);
   let load = async () => {
     setError("");
-    try { setBilling(await getBillingPlan()); } catch (e) { setError(e.message); }
+    setLoading(true);
+    try { setBilling(await getBillingPlan()); } catch (e) { setError(safeError(e, "We couldn't load billing and usage details. Please try again.")); } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
   if (error) return <div className="billing-error"><Error>{error}</Error><button className="secondary" onClick={load}>Try again</button></div>;
-  if (!billing) return <Loading />;
-  if (!billing.limits || !billing.current_usage || !billing.remaining_usage) return <div className="empty-state"><CreditCard size={22} /><span>Usage information is not available yet.</span></div>;
+  if (loading || !billing) return <Loading>Loading billing and usage…</Loading>;
+  if (!billing.limits || !billing.current_usage || !billing.remaining_usage) return <div className="empty-state"><CreditCard size={22} /><span>Usage information is not available yet.</span><span>Check back after your workspace has recorded activity.</span></div>;
   return <div className="billing-usage">
     <div className="billing-plan-summary"><div><span className="eyebrow">CURRENT PLAN</span><h3>{billing.plan}</h3><p>Usage resets monthly for cases, AI analyses, and invitations.</p></div><span className={`billing-plan-badge ${String(billing.plan).toLowerCase()}`}>{billing.plan}</span></div>
     <div className="usage-grid">{Object.entries(usageLabels).map(([metric, label]) => {
@@ -1848,6 +1904,67 @@ function SaaSSettings({ identity }) {
     </section>
   );
 }
+const publicNavigate = (path) => {
+  history.pushState({}, "", path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+};
+function LandingPage() {
+  const features = [
+    [BrainCircuit, "Explainable AI recommendations", "Clear reasoning and evidence help teams understand each recommendation."],
+    [ShieldCheck, "Human final authority", "AI advises; people remain responsible for every final decision."],
+    [History, "Decision audit trail", "A transparent record of the case, advice, review, and outcome."],
+    [Users, "Team roles & collaboration", "Invite the right people and assign clear workspace responsibilities."],
+    [BarChart3, "Decision analytics", "See decision activity and workspace usage in one focused view."],
+  ];
+  const steps = ["Create decision case", "AI analyzes evidence", "Human reviews", "Human makes final decision", "Decision is audited"];
+  return <main className="landing-page">
+    <header className="landing-header">
+      <button className="landing-brand" onClick={() => publicNavigate("/")} aria-label="DECIDAI home"><span>DA</span><b>DECIDAI</b></button>
+      <nav aria-label="Public navigation"><button className="landing-sign-in" onClick={() => publicNavigate("/login")}>Sign In</button><button className="landing-start" onClick={() => publicNavigate("/signup")}>Get Started <ArrowRight size={16} /></button></nav>
+    </header>
+    <section className="landing-hero">
+      <span className="landing-kicker">HUMAN-IN-THE-LOOP AI</span>
+      <h1>AI Advises.<br /><em>Human Decides.</em></h1>
+      <p>DECIDAI helps teams make accountable, explainable business decisions with AI assistance and human final authority.</p>
+      <div className="landing-actions"><button className="landing-start" onClick={() => publicNavigate("/signup")}>Get Started <ArrowRight size={17} /></button><button className="landing-demo-link" onClick={() => publicNavigate("/login")}>Sign In</button></div>
+      <div className="landing-principle"><ShieldCheck size={18} /><span><b>Responsible by design.</b> AI recommends; humans make final decisions.</span></div>
+    </section>
+    <section className="landing-section" aria-labelledby="features-heading">
+      <div className="landing-section-heading"><span className="landing-kicker">BUILT FOR ACCOUNTABLE DECISIONS</span><h2 id="features-heading">Clarity at every step</h2><p>Everything your team needs to move from a request to a well-documented decision.</p></div>
+      <div className="landing-feature-grid">{features.map(([Icon, title, copy]) => <article key={title}><span><Icon size={20} /></span><h3>{title}</h3><p>{copy}</p></article>)}</div>
+    </section>
+    <section className="landing-section landing-how" aria-labelledby="how-heading">
+      <div className="landing-section-heading"><span className="landing-kicker">HOW IT WORKS</span><h2 id="how-heading">Human judgment stays in control</h2></div>
+      <ol>{steps.map((step, index) => <li key={step}><b>{String(index + 1).padStart(2, "0")}</b><span>{step}</span></li>)}</ol>
+    </section>
+    <section className="landing-responsible" aria-labelledby="responsible-heading"><div><span className="landing-kicker">RESPONSIBLE AI</span><h2 id="responsible-heading">AI recommends; humans make final decisions.</h2><p>DECIDAI keeps human oversight, reasoning, and accountability at the center of every workflow.</p></div><div className="landing-free-note">DECIDAI is currently free to use.<br />Paid plans are coming soon.</div></section>
+    <footer className="landing-footer"><div><b>DECIDAI</b><span>AI Advises. Human Decides.</span></div><div><span>Privacy</span><span>Terms</span></div></footer>
+  </main>;
+}
+function NotFoundPage({ authenticated = false }) {
+  return <main className="not-found-page"><div className="not-found-card"><span className="landing-kicker">404</span><h1>Page not found</h1><p>The page you requested is not available.</p><button className="landing-start" onClick={() => { if (authenticated) location.assign("/"); else publicNavigate("/"); }}>{authenticated ? "Back to Dashboard" : "Back to Home"}<ArrowRight size={16} /></button></div></main>;
+}
+function SessionRoute() {
+  return ["/", "", "/login", "/signup", "/forgot-password", "/reset-password"].includes(location.pathname) ? <App /> : <NotFoundPage authenticated />;
+}
+function RootRouter() {
+  let [ready, setReady] = useState(false), [hasSession, setHasSession] = useState(false), [path, setPath] = useState(location.pathname);
+  useEffect(() => {
+    let mounted = true;
+    let updatePath = () => setPath(location.pathname);
+    addEventListener("popstate", updatePath);
+    if (!supabase) { setReady(true); return () => removeEventListener("popstate", updatePath); }
+    supabase.auth.getSession().then(({ data }) => { if (mounted) { setHasSession(Boolean(data.session)); setReady(true); } });
+    let { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (mounted) setHasSession(Boolean(nextSession));
+    });
+    return () => { mounted = false; subscription.unsubscribe(); removeEventListener("popstate", updatePath); };
+  }, []);
+  if (!ready) return <Loading>Loading DECIDAI…</Loading>;
+  if (!hasSession && (path === "/" || path === "")) return <LandingPage />;
+  if (!hasSession && !["/login", "/signup", "/forgot-password", "/reset-password"].includes(path)) return <NotFoundPage />;
+  return <AuthGate><SessionRoute /></AuthGate>;
+}
 function App() {
   let auth = useAuth(),
     role = auth.profile?.role || "requester",
@@ -1876,12 +1993,18 @@ function App() {
     try {
       setData(await getCase(id));
       setPage("Case Analysis");
-    } catch (e) {
-      alert(e.message);
+    } catch {
+      setData({ id, _loadError: true });
+      setPage("Case Analysis");
     }
   }
-  async function refresh() {
-    await openCase(data.id || data.decision_case_id);
+  async function refresh(decisionRecorded = false) {
+    try {
+      let updated = await getCase(data.id || data.decision_case_id);
+      setData({ ...updated, _decisionRecorded: decisionRecorded });
+    } catch {
+      setData({ id: data.id || data.decision_case_id, _loadError: true });
+    }
   }
   let content =
     page === "Dashboard" ? (
@@ -1898,6 +2021,13 @@ function App() {
   return (
     <div className={`app role-${role}`}>
       <Sidebar {...{ page, setPage, open, setOpen, identity }} />
+      {open && (
+        <button
+          className="nav-scrim"
+          onClick={() => setOpen(false)}
+          aria-label="Close navigation"
+        />
+      )}
       <main>
         <Header {...{ setOpen, setPage, identity, openCase }} />
         <div className="content">
@@ -1911,7 +2041,5 @@ function App() {
   );
 }
 createRoot(document.getElementById("root")).render(
-  <AuthGate>
-    <App />
-  </AuthGate>,
+  <RootRouter />,
 );

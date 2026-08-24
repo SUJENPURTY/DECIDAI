@@ -1,0 +1,39 @@
+/* Focused safeguards for tablet and mobile layouts. */
+@media (max-width: 900px) {
+  .sidebar { transform:translateX(-100%); transition:transform .2s ease; box-shadow:8px 0 28px rgba(7,24,46,.22); }
+  .sidebar.open { transform:translateX(0); }
+  .mobile-close,.menu { display:block; }
+  .menu { border:0; background:transparent; color:#3d4a5d; padding:7px; }
+  main { margin-left:0; width:100%; }
+  .nav-scrim { position:fixed; z-index:4; inset:0; border:0; background:rgba(12,28,49,.32); }
+  .table-wrap { overflow-x:auto; }
+  .table-wrap table { min-width:760px; }
+}
+
+@media (max-width: 600px) {
+  .fields { grid-template-columns:1fr; }
+  .page-heading { flex-wrap:wrap; margin-bottom:21px; }
+  .page-heading > .primary { margin-left:auto; }
+  .ai-top,.recommendation { align-items:flex-start; gap:10px; flex-direction:column; }
+  .recommendation div { text-align:left; }
+  .form-actions { align-items:stretch; flex-wrap:wrap; }
+  .form-actions .secondary,.form-actions .primary { flex:1 1 145px; }
+}
+
+@media (max-width: 520px) {
+  header { padding:0 12px; gap:5px; }
+  .header-tag { min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .header-tag b { display:none; }
+  .header-right { gap:7px; }
+  .user-dropdown { position:fixed; top:61px; right:12px; left:12px; width:auto; }
+  .analytics-chart-grid { grid-template-columns:1fr; }
+  .analytics-chart,.analytics-chart:first-child,.comparison-chart { grid-column:auto; }
+  .timeline-bars { gap:3px; }
+  .outcome-bars { gap:14px; }
+  .invite-modal { max-height:calc(100vh - 32px); overflow-y:auto; }
+}
+
+.page-state { display:grid; gap:12px; justify-items:start; }
+.compact-empty { padding:24px; justify-items:start; text-align:left; }
+.compact-empty > span + span { color:#8491a5; font-size:12px; line-height:1.45; }
+.notification-notice { padding:10px 15px; border-top:1px solid #e7eff7; background:#f2fbf5; color:#287249; font-size:11px; font-weight:600; }
